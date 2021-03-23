@@ -1,25 +1,93 @@
-import torch
+import torch,itertools
 import torch.nn as nn
 from torch.autograd import Variable
 import numpy as np
 import torchvision.utils as vutils
 
 class aae():
+    def train(self, opt, modPath, imgPath, dataloader=None, aimGen=None, aux_testloader=None):
+        Tensor = torch.cuda.FloatTensor if opt.cuda else torch.FloatTensor
+
+        fake_noise = Variable(Tensor(np.random.normal(0, 1, (opt.batch_size, opt.latent_dim))))
+
+        # Initialize generator and discriminator
+        encoder = self.Encoder(opt, Tensor)
+        decoder = self.Decoder(opt)
+        discriminator = self.Discriminator(opt)
+
+        # Loss functions
+        adversarial_loss = torch.nn.BCELoss()
+        pixelwise_loss = torch.nn.L1Loss()
+
+        if opt.cuda:
+            encoder.cuda()
+            decoder.cuda()
+            discriminator.cuda()
+            adversarial_loss.cuda()
+            pixelwise_loss.cuda()
+
+        # Optimizers
+        optimizer_G = torch.optim.Adam(
+            itertools.chain(encoder.parameters(), decoder.parameters()), lr=opt.lr, betas=(opt.b1, opt.b2)
+        )
+        optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+
+        Batch = 0
+        if dataloader != None:
+            Batch += len(dataloader)
+        if aux_testloader != None:
+            Batch += len(aux_testloader)
+
+        for epoch in range(opt.n_epochs):
+            i = 0
+            if dataloader != None:
+                for i, (imgs, _) in enumerate(dataloader):
+                    log = self.epoch(encoder, decoder, optimizer_G, optimizer_D,
+                                    discriminator, adversarial_loss, pixelwise_loss,
+                                    opt, Tensor,
+                                    imgs=imgs, aimGen=aimGen, aux_test_imgs=None)
+                    print(
+                        "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
+                        % (epoch, opt.n_epochs, i, Batch, log[0], log[1])
+                    )
+
+            if aux_testloader != None:
+                for j, (fake_imgs, _) in enumerate(aux_testloader):
+                    log = self.epoch(encoder, decoder, optimizer_G, optimizer_D,
+                                    discriminator, adversarial_loss, pixelwise_loss,
+                                    opt, Tensor,
+                                    imgs=None, aimGen=aimGen, aux_test_imgs=fake_imgs)
+                    print(
+                        "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
+                        % (epoch, opt.n_epochs, i + j, Batch, log[0], log[1])
+                    )
+
+            if dataloader == None and aux_testloader == None:
+                log = self.epoch(encoder, decoder, optimizer_G, optimizer_D, discriminator,
+                                adversarial_loss, pixelwise_loss, opt, Tensor,
+                                imgs=None, aimGen=aimGen, aux_test_imgs=None)
+
+                print(
+                    "[Epoch %d/%d] [D loss: %f] [G loss: %f]"
+                    % (epoch, opt.n_epochs, log[0], log[1])
+                )
+            self.epoch_save(epoch, modPath, imgPath, encoder, decoder, discriminator, fake_noise)
+
     # 训练函数
     # 每从datalodaer中调用一个bitch的数据就需要调用一次train函数
     # 返回两个模型的loss
     # for epoch in range(opt.n_epochs):
     #     for i, (imgs, _) in enumerate(dataloader):
-    #         aae.train(encoder, decoder, discriminator, opt, imgs, Tensor)
-    def train(self, encoder, decoder, optimizer_G, optimizer_D, discriminator,
-              adversarial_loss, pixelwise_loss, opt, imgs_shape, Tensor,
+    #         aae.epoch(encoder, decoder, discriminator, opt, imgs, Tensor)
+    def epoch(self, encoder, decoder, optimizer_G, optimizer_D, discriminator,
+              adversarial_loss, pixelwise_loss, opt, Tensor,
               imgs=None, aimGen=None, aux_test_imgs=None):
         # Adversarial ground truths
-        valid = Variable(Tensor(imgs_shape, 1).fill_(1.0), requires_grad=False)
-        fake = Variable(Tensor(imgs_shape, 1).fill_(0.0), requires_grad=False)
+        valid = Variable(Tensor(opt.batch_size, 1).fill_(1.0), requires_grad=False)
+        fake = Variable(Tensor(opt.batch_size, 1).fill_(0.0), requires_grad=False)
 
         # Sample noise as discriminator ground truth
-        z = Variable(Tensor(np.random.normal(0, 1, (imgs_shape, opt.latent_dim))))
+        z = Variable(Tensor(np.random.normal(0, 1, (opt.batch_size, opt.batch_size))))
         fake_imgs = encoder(z)
 
         # ---------------------
@@ -139,24 +207,61 @@ class aae():
             validity = self.model(z)
             return validity
 
-    def epoch_save(self,epoch, modPath, imgPath, encoder, decoder, discriminator, imgs, fake_noise):
+    def epoch_save(self,epoch, modPath, imgPath, encoder, decoder, discriminator, fake_noise):
         torch.save(encoder.state_dict(), '%s/encoder_epoch_%03d.pth' % (modPath, epoch))
         torch.save(decoder.state_dict(), '%s/decoder_epoch_%03d.pth' % (modPath, epoch))
         torch.save(discriminator.state_dict(), '%s/netD_epoch_%03d.pth' % (modPath, epoch))
-        vutils.save_image(imgs, '%s/real_%03d.png' % imgPath, nrow=8, normalize=True)
         fake = decoder(fake_noise)
         vutils.save_image(fake.data, '%s/fake_%03d.png' % imgPath, nrow=8, normalize=True)
 
-    def final_save(self, modPath, encoder, decoder, discriminator):
-        torch.save(encoder, '%s/encoder_final.pth' % (modPath))
-        torch.save(decoder, '%s/decoder_final.pth' % (modPath))
-        torch.save(discriminator, '%s/discriminator_final.pth' % (modPath))
+    # def final_save(self, modPath, encoder, decoder, discriminator):
+    #     torch.save(encoder, '%s/encoder_final.pth' % (modPath))
+    #     torch.save(decoder, '%s/decoder_final.pth' % (modPath))
+    #     torch.save(discriminator, '%s/discriminator_final.pth' % (modPath))
 
 # acgan 具有分类和生成功能，但我们不能对攻击目标生成器生成的img给以准确的标签
 # 因此暂时不将其考虑在攻击实验中
 class acgan():
+    def train(self, opt, dataloader, modPath, imgPath):
+        FloatTensor = torch.cuda.FloatTensor if opt.cuda else torch.FloatTensor
+        LongTensor = torch.cuda.LongTensor if opt.cuda else torch.LongTensor
+
+        n_row = 8
+        fake_noise = Variable(FloatTensor(np.random.normal(0, 1, (opt.batch_size, opt.latent_dim))))
+        noise_label = Variable(LongTensor(np.array([num for _ in range(n_row) for num in range(n_row)])))
+
+        # Initialize generator and discriminator
+        generator = self.Generator(opt)
+        discriminator = self.Discriminator(opt)
+
+        # Loss functions
+        adversarial_loss = torch.nn.BCELoss()
+        auxiliary_loss = torch.nn.CrossEntropyLoss()
+
+        if opt.cuda:
+            generator.cuda()
+            discriminator.cuda()
+            adversarial_loss.cuda()
+            auxiliary_loss.cuda()
+
+        # Optimizers
+        optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+        optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+
+        for epoch in range(opt.n_epochs):
+            for i, (imgs, labels) in enumerate(dataloader):
+                log = acgan.epoch(generator, discriminator, optimizer_G, optimizer_D,
+                                  adversarial_loss, auxiliary_loss, opt, imgs, labels,
+                                  FloatTensor, LongTensor)
+                print(
+                    "[Epoch %d/%d] [Batch %d/%d] [D loss: %f, acc: %d%%] [G loss: %f]"
+                    % (epoch, opt.n_epochs, i, len(dataloader), log[0], 100 * log[1], log[2])
+                )
+            acgan.epoch_save(epoch, modPath, imgPath, generator, discriminator, fake_noise, noise_label)
+        # final_save(modPath, generator, discriminator)
+
     # return D_loss D_accuracy G_loss
-    def train(self, generator, discriminator, optimizer_G, optimizer_D, adversarial_loss,
+    def epoch(self, generator, discriminator, optimizer_G, optimizer_D, adversarial_loss,
               auxiliary_loss, opt, imgs, labels, FloatTensor, LongTensor):
         batch_size = imgs.shape[0]
 
@@ -285,19 +390,85 @@ class acgan():
 
             return validity, label
 
-    def epoch_save(self, epoch, modPath, imgPath, generator, discriminator, imgs, fake_noise, labels):
+    def epoch_save(self, epoch, modPath, imgPath, generator, discriminator, fake_noise, labels):
         torch.save(generator.state_dict(), '%s/netG_epoch_%03d.pth' % (modPath, epoch))
         torch.save(discriminator.state_dict(), '%s/netD_epoch_%03d.pth' % (modPath, epoch))
-        vutils.save_image(imgs, '%s/real_%03d.png' % imgPath, nrow=8, normalize=True)
         fake = generator(fake_noise, labels)
         vutils.save_image(fake.data, '%s/fake_%03d.png' % imgPath, nrow=8, normalize=True)
 
 class began():
+    def train(self, opt, modPath, imgPath, dataloader=None, aimGen=None, aux_testloader=None):
+        Tensor = torch.cuda.FloatTensor if opt.cuda else torch.FloatTensor
+
+        fake_noise = Variable(Tensor(np.random.normal(0, 1, (opt.batch_size, opt.latent_dim))))
+
+        # Initialize generator and discriminator
+        generator = self.Generator(opt)
+        discriminator = self.Discriminator(opt)
+
+        if opt.cuda:
+            generator.cuda()
+            discriminator.cuda()
+
+        # Initialize weights
+        generator.apply(weights_init_normal)
+        discriminator.apply(weights_init_normal)
+
+        # Optimizers
+        optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+        optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+
+        gamma = 0.75
+        lambda_k = 0.001
+        k = 0.0
+
+        Batch = 0
+        if dataloader != None:
+            Batch += len(dataloader)
+        if aux_testloader != None:
+            Batch += len(aux_testloader)
+
+        for epoch in range(opt.n_epochs):
+            i = 0
+            if dataloader != None:
+                for i, (imgs, _) in enumerate(dataloader):
+                    log = self.epoch(generator, discriminator, optimizer_G, optimizer_D, opt,
+                                      gamma, lambda_k, k, Tensor,
+                                      imgs=imgs, aimGen=aimGen, aux_test_imgs=None)
+                    k = log[3]
+                    print(
+                        "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f] -- M: %f, k: %f"
+                        % (epoch, opt.n_epochs, i, Batch, log[0], log[1], log[2], log[3])
+                    )
+
+            if aux_testloader != None:
+                for j, (fake_imgs, _) in enumerate(aux_testloader):
+                    log = self.epoch(generator, discriminator, optimizer_G, optimizer_D, opt,
+                                      gamma, lambda_k, k, Tensor,
+                                      imgs=None, aimGen=aimGen, aux_test_imgs=fake_imgs)
+                    k = log[3]
+                    print(
+                        "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f] -- M: %f, k: %f"
+                        % (epoch, opt.n_epochs, i + j, Batch, log[0], log[1], log[2], log[3])
+                    )
+
+            if dataloader == None and aux_testloader == None:
+                log = self.epoch(generator, discriminator, optimizer_G, optimizer_D, opt,
+                                  gamma, lambda_k, k, Tensor,
+                                  imgs=None, aimGen=aimGen, aux_test_imgs=None)
+                k = log[3]
+                print(
+                    "[Step %d/%d] [D loss: %f] [G loss: %f] -- M: %f, k: %f"
+                    % (epoch, opt.n_epochs, log[0], log[1], log[2], log[3])
+                )
+            self.epoch_save(epoch, modPath, imgPath, generator, discriminator, fake_noise)
+        # final_save(modPath, generator, discriminator)
+
     #return D_loss G_loss M k
-    def train(self, generator, discriminator, optimizer_G, optimizer_D, opt, imgs_shape,
+    def epoch(self, generator, discriminator, optimizer_G, optimizer_D, opt,
               gamma, lambda_k, k, Tensor, imgs=None, aimGen=None, aux_test_imgs=None):
         # Sample noise as generator input
-        z = Variable(Tensor(np.random.normal(0, 1, (imgs_shape, opt.latent_dim))))
+        z = Variable(Tensor(np.random.normal(0, 1, (opt.batch_size, opt.latent_dim))))
 
         # Generate a batch of images
         gen_imgs = generator(z)
@@ -420,22 +591,85 @@ class began():
             out = self.up(out.view(out.size(0), 64, self.down_size, self.down_size))
             return out
 
-    def epoch_save(self, epoch, modPath, imgPath, generator, discriminator, imgs, fake_noise):
+    def epoch_save(self, epoch, modPath, imgPath, generator, discriminator, fake_noise):
         torch.save(generator.state_dict(), '%s/netG_epoch_%03d.pth' % (modPath, epoch))
         torch.save(discriminator.state_dict(), '%s/netD_epoch_%03d.pth' % (modPath, epoch))
-        vutils.save_image(imgs, '%s/real_%03d.png' % imgPath, nrow=8, normalize=True)
         fake = generator(fake_noise)
         vutils.save_image(fake.data, '%s/fake_%03d.png' % imgPath, nrow=8, normalize=True)
 
 class dcgan():
-    def train(self, generator, discriminator, optimizer_G, optimizer_D, adversarial_loss,
-              opt, imgs_shape, Tensor, imgs=None, aimGen=None, aux_test_imgs=None):
+    def train(self, opt, modPath, imgPath, dataloader=None, aimGen=None, aux_testloader=None):
+        Tensor = torch.cuda.FloatTensor if opt.cuda else torch.FloatTensor
+
+        fake_noise = Variable(Tensor(np.random.normal(0, 1, (opt.batch_size, opt.latent_dim))))
+
+        # Initialize generator and discriminator
+        generator = self.Generator(opt)
+        discriminator = self.Discriminator(opt)
+
+        # Loss function
+        adversarial_loss = torch.nn.BCELoss()
+
+        if opt.cuda:
+            generator.cuda()
+            discriminator.cuda()
+            adversarial_loss.cuda()
+
+        # Initialize weights
+        generator.apply(weights_init_normal)
+        discriminator.apply(weights_init_normal)
+
+        # Optimizers
+        optimizer_G = torch.optim.Adam(generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+        optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+
+        Batch = 0
+        if dataloader != None:
+            Batch += len(dataloader)
+        if aux_testloader != None:
+            Batch += len(aux_testloader)
+
+        for epoch in range(opt.n_epochs):
+            i = 0
+            if dataloader != None:
+                for i, (imgs, _) in enumerate(dataloader):
+                    log = self.epoch(generator, discriminator, optimizer_G, optimizer_D,
+                                      adversarial_loss, opt, Tensor,
+                                      imgs=imgs, aimGen=aimGen, aux_test_imgs=None)
+                    print(
+                        "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
+                        % (epoch, opt.n_epochs, i, Batch, log[0], log[1])
+                    )
+
+            if aux_testloader != None:
+                for j, (fake_imgs, _) in enumerate(aux_testloader):
+                    log = self.epoch(generator, discriminator, optimizer_G, optimizer_D,
+                                      adversarial_loss, opt, Tensor,
+                                      imgs=None, aimGen=aimGen, aux_test_imgs=fake_imgs)
+                    print(
+                        "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
+                        % (epoch, opt.n_epochs, i + j, Batch, log[0], log[1])
+                    )
+
+            elif dataloader == None and aux_testloader == None:
+                log = self.epoch(generator, discriminator, optimizer_G, optimizer_D,
+                                  adversarial_loss, opt, Tensor,
+                                  imgs=None, aimGen=aimGen, aux_test_imgs=None)
+                print(
+                    "[Step %d/%d] [D loss: %f] [G loss: %f]"
+                    % (epoch, opt.n_epochs, log[0], log[1])
+                )
+            self.epoch_save(epoch, modPath, imgPath, generator, discriminator, fake_noise)
+        # final_save(modPath, generator, discriminator)
+
+    def epoch(self, generator, discriminator, optimizer_G, optimizer_D, adversarial_loss,
+              opt, Tensor, imgs=None, aimGen=None, aux_test_imgs=None):
         # Adversarial ground truths
-        valid = Variable(Tensor(imgs_shape, 1).fill_(1.0), requires_grad=False)
-        fake = Variable(Tensor(imgs_shape, 1).fill_(0.0), requires_grad=False)
+        valid = Variable(Tensor(opt.batch_size, 1).fill_(1.0), requires_grad=False)
+        fake = Variable(Tensor(opt.batch_size, 1).fill_(0.0), requires_grad=False)
 
         # Sample noise as generator input
-        z = Variable(Tensor(np.random.normal(0, 1, (imgs_shape, opt.latent_dim))))
+        z = Variable(Tensor(np.random.normal(0, 1, (opt.batch_size, opt.latent_dim))))
 
         # Generate a batch of images
         gen_imgs = generator(z)
@@ -544,10 +778,9 @@ class dcgan():
 
             return validity
 
-    def epoch_save(self, epoch, modPath, imgPath, generator, discriminator, imgs, fake_noise):
+    def epoch_save(self, epoch, modPath, imgPath, generator, discriminator, fake_noise):
         torch.save(generator.state_dict(), '%s/netG_epoch_%03d.pth' % (modPath, epoch))
         torch.save(discriminator.state_dict(), '%s/netD_epoch_%03d.pth' % (modPath, epoch))
-        vutils.save_image(imgs, '%s/real_%03d.png' % imgPath, nrow=8, normalize=True)
         fake = generator(fake_noise)
         vutils.save_image(fake.data, '%s/fake_%03d.png' % imgPath, nrow=8, normalize=True)
 

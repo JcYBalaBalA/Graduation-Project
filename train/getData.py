@@ -22,8 +22,8 @@ def getData(dset_name, batch_size, data_transform):
         trainset = dset.CocoCaptions(dataPath, train=True, download=True, transform=data_transform)
         testset = dset.CocoCaptions(dataPath, train=False, download=True, transform=data_transform)
     elif dset_name == "MNIST":
-        trainset = dset.mnist(dataPath, train=True, download=True, transform=data_transform)
-        testset = dset.mnist(dataPath, train=False, download=True, transform=data_transform)
+        trainset = dset.MNIST(dataPath, train=True, download=True, transform=data_transform)
+        testset = dset.MNIST(dataPath, train=False, download=True, transform=data_transform)
     elif dset_name == "CIFAR100":
         trainset = dset.CIFAR100(dataPath, train=True, download=True, transform=data_transform)
         testset = dset.CIFAR100(dataPath, train=False, download=True, transform=data_transform)
