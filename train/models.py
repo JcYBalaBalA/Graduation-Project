@@ -4,6 +4,31 @@ from torch.autograd import Variable
 import numpy as np
 import torchvision.utils as vutils
 
+class model_opt():
+    # len(opt_list = 10)
+    # n_epochs,batch_size,lr,b1,b2,n_cpu,
+    # latent_dim,img_size,channels,sample_interval
+    # n_classes可选
+    def __init__(self, opt_list, cuda=False):
+        self.n_epochs = opt_list[0]
+        self.batch_size = opt_list[1]
+        self.lr = opt_list[2]
+        self.b1 = opt_list[3]
+        self.b2 = opt_list[4]
+        self.n_cpu = opt_list[5]
+        self.latent_dim = opt_list[6]
+        self.img_size = opt_list[7]
+        self.channels = opt_list[8]
+        self.sample_interval = opt_list[9]
+        self.cuda = cuda
+        if len(opt_list) == 11:
+            self.n_classes = opt_list[10]
+
+    def list_all_member(self):
+        for name, value in vars(self).items():
+            print('\t%s=%s ' % (name, value))
+
+'''
 class aae():
     def train(self, opt, modPath, imgPath, dataloader=None, aimGen=None, aux_testloader=None):
         Tensor = torch.cuda.FloatTensor if opt.cuda else torch.FloatTensor
@@ -82,17 +107,17 @@ class aae():
     def epoch(self, encoder, decoder, optimizer_G, optimizer_D, discriminator,
               adversarial_loss, pixelwise_loss, opt, Tensor,
               imgs=None, aimGen=None, aux_test_imgs=None):
+
         # Adversarial ground truths
         valid = Variable(Tensor(opt.batch_size, 1).fill_(1.0), requires_grad=False)
         fake = Variable(Tensor(opt.batch_size, 1).fill_(0.0), requires_grad=False)
 
-        # Sample noise as discriminator ground truth
-        z = Variable(Tensor(np.random.normal(0, 1, (opt.batch_size, opt.batch_size))))
-        fake_imgs = encoder(z)
-
         # ---------------------
         #  Train Discriminator
         # ---------------------
+
+        # Sample noise as discriminator ground truth
+        z = Variable(Tensor(np.random.normal(0, 1, (imgs.shape[0], opt.latent_dim))))
 
         optimizer_D.zero_grad()
 
@@ -101,7 +126,7 @@ class aae():
         if imgs != None:
             # Configure input
             real_imgs = Variable(imgs.type(Tensor))
-            real_loss = adversarial_loss(real_imgs, valid)
+            real_loss = adversarial_loss(discriminator(real_imgs), valid)
         else:
             real_imgs = z
 
@@ -208,17 +233,17 @@ class aae():
             return validity
 
     def epoch_save(self,epoch, modPath, imgPath, encoder, decoder, discriminator, fake_noise):
-        torch.save(encoder.state_dict(), '%s/encoder_epoch_%03d.pth' % (modPath, epoch))
-        torch.save(decoder.state_dict(), '%s/decoder_epoch_%03d.pth' % (modPath, epoch))
-        torch.save(discriminator.state_dict(), '%s/netD_epoch_%03d.pth' % (modPath, epoch))
+        torch.save(encoder, '%s/encoder_epoch_%06d.pth' % (modPath, epoch))
+        torch.save(decoder, '%s/decoder_epoch_%06d.pth' % (modPath, epoch))
+        torch.save(discriminator, '%s/netD_epoch_%06d.pth' % (modPath, epoch))
         fake = decoder(fake_noise)
-        vutils.save_image(fake.data, '%s/fake_%03d.png' % imgPath, nrow=8, normalize=True)
+        vutils.save_image(fake.data, '%s/fake_%06d.png' % imgPath, nrow=8, normalize=True)
 
     # def final_save(self, modPath, encoder, decoder, discriminator):
     #     torch.save(encoder, '%s/encoder_final.pth' % (modPath))
     #     torch.save(decoder, '%s/decoder_final.pth' % (modPath))
     #     torch.save(discriminator, '%s/discriminator_final.pth' % (modPath))
-
+'''
 # acgan 具有分类和生成功能，但我们不能对攻击目标生成器生成的img给以准确的标签
 # 因此暂时不将其考虑在攻击实验中
 class acgan():
@@ -250,7 +275,7 @@ class acgan():
 
         for epoch in range(opt.n_epochs):
             for i, (imgs, labels) in enumerate(dataloader):
-                log = acgan.epoch(generator, discriminator, optimizer_G, optimizer_D,
+                log = self.epoch(generator, discriminator, optimizer_G, optimizer_D,
                                   adversarial_loss, auxiliary_loss, opt, imgs, labels,
                                   FloatTensor, LongTensor)
                 print(
@@ -380,7 +405,7 @@ class acgan():
 
             # Output layers
             self.adv_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, 1), nn.Sigmoid())
-            self.aux_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, opt.n_classes), nn.Softmax())
+            self.aux_layer = nn.Sequential(nn.Linear(128 * ds_size ** 2, opt.n_classes), nn.Softmax(dim=-1))
 
         def forward(self, img):
             out = self.conv_blocks(img)
@@ -391,10 +416,10 @@ class acgan():
             return validity, label
 
     def epoch_save(self, epoch, modPath, imgPath, generator, discriminator, fake_noise, labels):
-        torch.save(generator.state_dict(), '%s/netG_epoch_%03d.pth' % (modPath, epoch))
-        torch.save(discriminator.state_dict(), '%s/netD_epoch_%03d.pth' % (modPath, epoch))
+        torch.save(generator, '%s/netG_epoch_%06d.pth' % (modPath, epoch))
+        torch.save(discriminator, '%s/netD_epoch_%06d.pth' % (modPath, epoch))
         fake = generator(fake_noise, labels)
-        vutils.save_image(fake.data, '%s/fake_%03d.png' % imgPath, nrow=8, normalize=True)
+        vutils.save_image(fake.data, '%s/fake_%06d.png' % imgPath, nrow=8, normalize=True)
 
 class began():
     def train(self, opt, modPath, imgPath, dataloader=None, aimGen=None, aux_testloader=None):
@@ -592,10 +617,10 @@ class began():
             return out
 
     def epoch_save(self, epoch, modPath, imgPath, generator, discriminator, fake_noise):
-        torch.save(generator.state_dict(), '%s/netG_epoch_%03d.pth' % (modPath, epoch))
-        torch.save(discriminator.state_dict(), '%s/netD_epoch_%03d.pth' % (modPath, epoch))
+        torch.save(generator, '%s/netG_epoch_%06d.pth' % (modPath, epoch))
+        torch.save(discriminator, '%s/netD_epoch_%06d.pth' % (modPath, epoch))
         fake = generator(fake_noise)
-        vutils.save_image(fake.data, '%s/fake_%03d.png' % imgPath, nrow=8, normalize=True)
+        vutils.save_image(fake.data, '%s/fake_%06d.png' % imgPath, nrow=8, normalize=True)
 
 class dcgan():
     def train(self, opt, modPath, imgPath, dataloader=None, aimGen=None, aux_testloader=None):
@@ -779,10 +804,10 @@ class dcgan():
             return validity
 
     def epoch_save(self, epoch, modPath, imgPath, generator, discriminator, fake_noise):
-        torch.save(generator.state_dict(), '%s/netG_epoch_%03d.pth' % (modPath, epoch))
-        torch.save(discriminator.state_dict(), '%s/netD_epoch_%03d.pth' % (modPath, epoch))
+        torch.save(generator, '%s/netG_epoch_%06d.pth' % (modPath, epoch))
+        torch.save(discriminator, '%s/netD_epoch_%06d.pth' % (modPath, epoch))
         fake = generator(fake_noise)
-        vutils.save_image(fake.data, '%s/fake_%03d.png' % imgPath, nrow=8, normalize=True)
+        vutils.save_image(fake.data, '%s/fake_%06d.png' % imgPath, nrow=8, normalize=True)
 
 # acgan began dcgan
 def weights_init_normal(m):
